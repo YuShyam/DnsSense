@@ -25,6 +25,8 @@ class NetworkObserver(private val context: Context) {
         context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
     private var callback: ConnectivityManager.NetworkCallback? = null
+    @Volatile
+    private var lastDispatchedSnapshot: NetworkSnapshot? = null
 
     fun currentSnapshot(): NetworkSnapshot {
         return try {
@@ -39,17 +41,18 @@ class NetworkObserver(private val context: Context) {
 
     fun start(onChanged: (NetworkSnapshot) -> Unit) {
         stop()
+        lastDispatchedSnapshot = null
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                onChanged(currentSnapshot())
+                dispatchIfChanged(currentSnapshot(), onChanged)
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                onChanged(buildSnapshot(networkCapabilities))
+                dispatchIfChanged(buildSnapshot(networkCapabilities), onChanged)
             }
 
             override fun onLost(network: Network) {
-                onChanged(currentSnapshot())
+                dispatchIfChanged(currentSnapshot(), onChanged)
             }
         }
         callback = cb
@@ -77,6 +80,26 @@ class NetworkObserver(private val context: Context) {
             }
         }
         callback = null
+        lastDispatchedSnapshot = null
+    }
+
+    /**
+     * 源頭節流：僅當傳輸類型、SSID 或 Captive Portal 狀態實質改變時才回報，
+     * 過濾 Wi-Fi 訊號強弱 (RSSI) 波動引發之無效喚醒。
+     */
+    private fun dispatchIfChanged(
+        snapshot: NetworkSnapshot,
+        onChanged: (NetworkSnapshot) -> Unit
+    ) {
+        val prev = lastDispatchedSnapshot
+        if (prev != null &&
+            prev.networkKey == snapshot.networkKey &&
+            prev.isCaptivePortal == snapshot.isCaptivePortal
+        ) {
+            return
+        }
+        lastDispatchedSnapshot = snapshot
+        onChanged(snapshot)
     }
 
     @Suppress("DEPRECATION")

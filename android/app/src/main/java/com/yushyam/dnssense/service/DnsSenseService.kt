@@ -44,6 +44,8 @@ class DnsSenseService : Service() {
     private lateinit var prefs: DnsSensePrefs
     private lateinit var observer: NetworkObserver
     private var evalJob: Job? = null
+    @Volatile
+    private var lastEvaluatedFingerprint: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -98,11 +100,11 @@ class DnsSenseService : Service() {
             if (!immediate) {
                 delay(DEBOUNCE_MS)
             }
-            evaluateAndAct(snapshot)
+            evaluateAndAct(snapshot, force = immediate)
         }
     }
 
-    private fun evaluateAndAct(snapshot: NetworkSnapshot) {
+    private fun evaluateAndAct(snapshot: NetworkSnapshot, force: Boolean) {
         val config = prefs.loadConfig()
         var tempBypassKey = prefs.getTempBypassNetworkKey()
 
@@ -114,6 +116,13 @@ class DnsSenseService : Service() {
             prefs.setTempBypassNetworkKey(null)
             tempBypassKey = null
         }
+
+        // 第二道省電防線：非強制重評且網路/設定指紋完全未變時，直接略過避免重複 DoT 853 探測
+        val fingerprint = DecisionEngine.buildEvaluationFingerprint(config, snapshot, tempBypassKey)
+        if (!force && fingerprint == lastEvaluatedFingerprint) {
+            return
+        }
+        lastEvaluatedFingerprint = fingerprint
 
         val hasPermission = PrivateDnsController.hasWriteSecureSettings(this)
         val probeResult = if (DecisionEngine.shouldRunDotProbe(config, snapshot, tempBypassKey)) {

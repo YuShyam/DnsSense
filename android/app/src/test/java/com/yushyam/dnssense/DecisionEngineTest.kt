@@ -172,4 +172,21 @@ class DecisionEngineTest {
         assertEquals(0x01.toByte(), packet[2]) // RD=1
         assertEquals(0x01.toByte(), packet[5]) // QDCOUNT=1
     }
+
+    @Test
+    fun evaluationFingerprintDeduplicatesUnchangedNetwork() {
+        val s1 = NetworkSnapshot(NetworkTransport.WIFI, ssid = "\"Office_Corp\"", isCaptivePortal = false)
+        val s2 = NetworkSnapshot(NetworkTransport.WIFI, ssid = "Office_Corp", isCaptivePortal = false)
+        val sCaptive = NetworkSnapshot(NetworkTransport.WIFI, ssid = "Office_Corp", isCaptivePortal = true)
+        val sOther = NetworkSnapshot(NetworkTransport.CELLULAR)
+
+        val fp1 = DecisionEngine.buildEvaluationFingerprint(baseConfig, s1, null)
+        val fp2 = DecisionEngine.buildEvaluationFingerprint(baseConfig, s2, null)
+        val fpCaptive = DecisionEngine.buildEvaluationFingerprint(baseConfig, sCaptive, null)
+        val fpOther = DecisionEngine.buildEvaluationFingerprint(baseConfig, sOther, null)
+
+        assertEquals(fp1, fp2)
+        assertFalse(fp1 == fpCaptive)
+        assertFalse(fp1 == fpOther)
+    }
 }

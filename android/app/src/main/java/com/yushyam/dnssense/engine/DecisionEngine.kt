@@ -155,4 +155,31 @@ object DecisionEngine {
         if (snapshot.isCaptivePortal) return false
         return true
     }
+
+    /**
+     * 產生狀態評估指紋 (Evaluation Fingerprint for Power-Saving Deduplication)
+     * 當 Wi-Fi 訊號強度 (RSSI) 跳動重複觸發 onCapabilitiesChanged 但網路與規則未變時，
+     * 透過比對指紋直接略過重複 DoT 853 探測與系統寫入，將背景喚醒耗電降至最低。
+     */
+    fun buildEvaluationFingerprint(
+        config: DnsSenseConfig,
+        snapshot: NetworkSnapshot,
+        tempBypassNetworkKey: String?
+    ): String {
+        val sortedSsids = config.bypassSsids
+            .map { NetworkSnapshot.normalizeSsid(it).lowercase() }
+            .filter { it.isNotEmpty() }
+            .sorted()
+            .joinToString(",")
+        return listOf(
+            snapshot.networkKey,
+            snapshot.isCaptivePortal.toString(),
+            config.enabled.toString(),
+            config.hostname.trim().lowercase(),
+            config.autoProbeEnabled.toString(),
+            config.bypassCellular.toString(),
+            sortedSsids,
+            tempBypassNetworkKey.orEmpty()
+        ).joinToString("|")
+    }
 }
