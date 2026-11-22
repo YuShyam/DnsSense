@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 幾何防護盾牌外框（安全區 24..84 內，視覺高對比） -->
+    <path
+        android:fillColor="#16FFFFFF"
+        android:pathData="M54,24 L76,32.5 C77.5,33.1 78.5,34.5 78.5,36.1 L78.5,53.5 C78.5,67.5 68.2,78.4 55.2,83.4 C54.4,83.7 53.6,83.7 52.8,83.4 C39.8,78.4 29.5,67.5 29.5,53.5 L29.5,36.1 C29.5,34.5 30.5,33.1 32,32.5 Z"
+        android:strokeWidth="3.2"
+        android:strokeColor="#FFFAFAFA"
+        android:strokeLineJoin="round" />
+
+    <!-- 外層 Sense 無線感知弧波 -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M40.5,49.5 C44.2,45.8 48.9,44 54,44 C59.1,44 63.8,45.8 67.5,49.5"
+        android:strokeWidth="3.2"
+        android:strokeColor="#FFE4E4E7"
+        android:strokeLineCap="round" />
+
+    <!-- 中層 Sense 無線感知弧波 -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M45.5,55.5 C47.8,53.2 50.8,52 54,52 C57.2,52 60.2,53.2 62.5,55.5"
+        android:strokeWidth="3.2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- 核心翡翠綠心跳感測點 (DoT 853 Healthy Pulse) -->
+    <path
+        android:fillColor="#3810B981"
+        android:pathData="M54,64m-7.5,0a7.5,7.5 0,1 1,15 0a7.5,7.5 0,1 1,-15 0" />
+    <path
+        android:fillColor="#FF10B981"
+        android:pathData="M54,64m-4.2,0a4.2,4.2 0,1 1,8.4 0a4.2,4.2 0,1 1,-8.4 0" />
+</vector>

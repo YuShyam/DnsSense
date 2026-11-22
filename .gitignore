@@ -1,0 +1,27 @@
+# Android / Gradle 建置產出與本機設定
+.gradle/
+build/
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/.cxx/
+android/captures/
+*.apk
+*.aab
+*.keystore
+!android/app/debug.keystore
+
+# 作業系統與編輯器暫存
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*~
+.vscode/
+
+# 專案本機私密設定與備份
+backups/
+GEMINI.md
