@@ -11,14 +11,6 @@ import com.yushyam.dnssense.data.model.ProbeResult
 
 /**
  * 雙層決策引擎 (Two-Layer Pure Decision Engine)
- *
- * 決策優先順序：
- * 1. 守護開關 / 無網路 / 主機名稱校驗
- * 2. 單次連線暫時覆寫（下拉快速磚觸發，離開該網路自動歸零）
- * 3. 手動排除清單（行動數據 4G/5G 或指定 Wi-Fi SSID）— 永遠優先於自動探測
- * 4. 系統 Captive Portal 認證頁偵測
- * 5. 主動 DoT 853 探測結果（失敗即自動降級為系統自動 DNS）
- * 6. 依據是否擁有 WRITE_SECURE_SETTINGS 自動分流模式 1（自動寫入）與模式 3（通知提醒）
  */
 object DecisionEngine {
 
@@ -35,7 +27,7 @@ object DecisionEngine {
             return DecisionOutcome(
                 targetMode = null,
                 reason = DecisionReason.GUARD_DISABLED,
-                detailZh = "DnsSense 背景守護已停用，維持系統現狀",
+                detailZh = "自動切換已暫停，維持系統現狀",
                 isAdvisoryOnly = advisoryOnly
             )
         }
@@ -44,7 +36,7 @@ object DecisionEngine {
             return DecisionOutcome(
                 targetMode = null,
                 reason = DecisionReason.NO_NETWORK,
-                detailZh = "目前無有效網路連線，暫不調整 DNS",
+                detailZh = "目前無網路連線，暫不調整 DNS",
                 isAdvisoryOnly = advisoryOnly
             )
         }
@@ -53,27 +45,25 @@ object DecisionEngine {
             return DecisionOutcome(
                 targetMode = null,
                 reason = DecisionReason.INVALID_HOSTNAME,
-                detailZh = "私人 DNS 主機名稱無效：${config.hostname}",
+                detailZh = "私人 DNS 位址格式無效：${config.hostname}",
                 isAdvisoryOnly = advisoryOnly
             )
         }
 
-        // 第一層：單次手動暫時覆寫
         if (!tempBypassNetworkKey.isNullOrBlank() && tempBypassNetworkKey == snapshot.networkKey) {
             return DecisionOutcome(
                 targetMode = PrivateDnsMode.OPPORTUNISTIC,
                 reason = DecisionReason.TEMP_MANUAL_BYPASS,
-                detailZh = "已對此連線暫時啟用自動 DNS，離開後將自動恢復私人 DNS",
+                detailZh = "此連線暫時使用自動 DNS，中斷連線後將恢復私人 DNS",
                 isAdvisoryOnly = advisoryOnly
             )
         }
 
-        // 第一層：手動排除清單（最高規則優先權，專治 853 通但內網或局部功能異常）
         if (snapshot.transport == NetworkTransport.CELLULAR && config.bypassCellular) {
             return DecisionOutcome(
                 targetMode = PrivateDnsMode.OPPORTUNISTIC,
                 reason = DecisionReason.BYPASS_CELLULAR,
-                detailZh = "行動數據 (4G/5G) 位於排除清單，切換為系統自動 DNS",
+                detailZh = "已設定排除行動網路 (4G/5G)，切換為自動 DNS",
                 isAdvisoryOnly = advisoryOnly
             )
         }
@@ -87,23 +77,21 @@ object DecisionEngine {
                 return DecisionOutcome(
                     targetMode = PrivateDnsMode.OPPORTUNISTIC,
                     reason = DecisionReason.BYPASS_WIFI_SSID,
-                    detailZh = "Wi-Fi「$currentSsid」位於排除網路清單，切換為系統自動 DNS",
+                    detailZh = "Wi-Fi「$currentSsid」位於排除清單，切換為自動 DNS",
                     isAdvisoryOnly = advisoryOnly
                 )
             }
         }
 
-        // 第二層：Captive Portal（飯店／高鐵／咖啡廳網頁認證）強制降級
         if (snapshot.isCaptivePortal) {
             return DecisionOutcome(
                 targetMode = PrivateDnsMode.OPPORTUNISTIC,
                 reason = DecisionReason.CAPTIVE_PORTAL_DETECTED,
-                detailZh = "偵測到網路需要網頁認證，暫時切換為自動 DNS 以利跳轉登入頁",
+                detailZh = "網路需要網頁登入認證，暫時切換為自動 DNS",
                 isAdvisoryOnly = advisoryOnly
             )
         }
 
-        // 第二層：主動 DoT 853 探測判定
         if (config.autoProbeEnabled && probeResult != null) {
             return if (probeResult.isHealthy) {
                 DecisionOutcome(
@@ -116,13 +104,12 @@ object DecisionEngine {
                 DecisionOutcome(
                     targetMode = PrivateDnsMode.OPPORTUNISTIC,
                     reason = DecisionReason.DOT_PROBE_FAILED,
-                    detailZh = "${probeResult.reason}，自動降級為系統自動 DNS",
+                    detailZh = "${probeResult.reason}，切換為自動 DNS",
                     isAdvisoryOnly = advisoryOnly
                 )
             }
         }
 
-        // 預設：非排除網路一律啟用私人 DNS 擋廣告
         return DecisionOutcome(
             targetMode = PrivateDnsMode.HOSTNAME,
             reason = DecisionReason.DEFAULT_PRIVATE_DNS,
@@ -131,10 +118,6 @@ object DecisionEngine {
         )
     }
 
-    /**
-     * 判斷在當前條件下是否需要發起實際 DoT 853 網路探測
-     * Avoids redundant network probes when manual bypass or captive portal already decides.
-     */
     fun shouldRunDotProbe(
         config: DnsSenseConfig,
         snapshot: NetworkSnapshot,
@@ -156,11 +139,6 @@ object DecisionEngine {
         return true
     }
 
-    /**
-     * 產生狀態評估指紋 (Evaluation Fingerprint for Power-Saving Deduplication)
-     * 當 Wi-Fi 訊號強度 (RSSI) 跳動重複觸發 onCapabilitiesChanged 但網路與規則未變時，
-     * 透過比對指紋直接略過重複 DoT 853 探測與系統寫入，將背景喚醒耗電降至最低。
-     */
     fun buildEvaluationFingerprint(
         config: DnsSenseConfig,
         snapshot: NetworkSnapshot,

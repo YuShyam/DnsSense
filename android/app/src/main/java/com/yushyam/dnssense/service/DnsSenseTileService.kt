@@ -12,9 +12,6 @@ import com.yushyam.dnssense.engine.PrivateDnsController
 
 /**
  * 下拉快速設定磚 (Quick Settings Escape Hatch Tile)
- *
- * 專為「853 探測正常但局部功能被廣告規則誤殺」場景設計：
- * 點一下立即將「本次連線」暫時切回自動 DNS；離開此網路後自動恢復私人 DNS 守護。
  */
 @RequiresApi(Build.VERSION_CODES.N)
 class DnsSenseTileService : TileService() {
@@ -37,13 +34,13 @@ class DnsSenseTileService : TileService() {
         val currentTemp = prefs.getTempBypassNetworkKey()
         if (currentTemp == snapshot.networkKey) {
             prefs.setTempBypassNetworkKey(null)
-            Toast.makeText(this, "DnsSense: 已恢復私人 DNS 守護", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "DnsSense: 已恢復私人 DNS", Toast.LENGTH_SHORT).show()
         } else {
             prefs.setTempBypassNetworkKey(snapshot.networkKey)
             val suffix = if (PrivateDnsController.hasWriteSecureSettings(this)) {
-                "已暫時切為自動 DNS（離開網路自動恢復）"
+                "已暫時切為自動 DNS（離開此網路後自動恢復）"
             } else {
-                "已標記本次連線暫停守護（請於系統設定手動切換）"
+                "已標記本次連線使用自動 DNS（請於系統設定手動切換）"
             }
             Toast.makeText(this, "DnsSense: $suffix", Toast.LENGTH_SHORT).show()
         }
@@ -64,7 +61,7 @@ class DnsSenseTileService : TileService() {
             tile.label = "DNS: 暫時自動"
         } else {
             tile.state = Tile.STATE_ACTIVE
-            tile.label = "DnsSense 守護"
+            tile.label = "私人 DNS"
         }
         tile.updateTile()
     }

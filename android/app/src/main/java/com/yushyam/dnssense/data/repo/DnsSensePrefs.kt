@@ -99,7 +99,8 @@ class DnsSensePrefs(context: Context) {
                         .ifBlank { DnsSenseConfig.DEFAULT_HOSTNAME },
                     autoProbeEnabled = obj.optBoolean("autoProbeEnabled", true),
                     bypassCellular = obj.optBoolean("bypassCellular", false),
-                    bypassSsids = obj.optStringList("bypassSsids")
+                    bypassSsids = obj.optStringList("bypassSsids"),
+                    themeMode = obj.optString("themeMode", "system").ifBlank { "system" }
                 )
             } catch (_: Exception) {
                 DnsSenseConfig()

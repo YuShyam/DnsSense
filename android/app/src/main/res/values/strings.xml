@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">DnsSense</string>
-    <string name="tile_label">DnsSense 守護</string>
+    <string name="tile_label">私人 DNS</string>
 </resources>

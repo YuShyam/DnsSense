@@ -15,10 +15,7 @@ import javax.net.ssl.SSLSocketFactory
 import kotlin.random.Random
 
 /**
- * RFC 7858 DNS-over-TLS (TCP 853) 真實查詢存活探測器 (Active DoT Prober)
- *
- * 不僅檢查 TCP 853 埠是否可連線，而是完整執行 TLS 握手、SNI 憑證主機名稱校驗，
- * 並送出標準 DNS A 記錄查詢封包驗證伺服器回應 NOERROR，精準排除防火牆 DPI 靜默丟包。
+ * RFC 7858 DNS-over-TLS (TCP 853) 連線測試器 (Active DoT Prober)
  */
 object DotProber {
 
@@ -32,7 +29,7 @@ object DotProber {
     ): ProbeResult {
         val cleanHost = hostname.trim()
         if (!HostnameValidator.isValid(cleanHost)) {
-            return ProbeResult(false, 0L, "無效的私人 DNS 主機名稱")
+            return ProbeResult(false, 0L, "私人 DNS 位址格式無效")
         }
 
         val startNs = System.nanoTime()
@@ -44,7 +41,6 @@ object DotProber {
             socket.connect(InetSocketAddress(cleanHost, DOT_PORT), timeoutMs)
             socket.soTimeout = timeoutMs
 
-            // 強制設定 SNI 並執行標準 TLS 握手與主機憑證驗證
             val sslParams = SSLParameters().apply {
                 serverNames = listOf(SNIHostName(cleanHost))
             }
@@ -54,10 +50,9 @@ object DotProber {
             val verified = HttpsURLConnection.getDefaultHostnameVerifier()
                 .verify(cleanHost, socket.session)
             if (!verified) {
-                return ProbeResult(false, elapsedMs(startNs), "TLS 憑證主機名稱不符（可能遭遇攔截）")
+                return ProbeResult(false, elapsedMs(startNs), "TLS 憑證名稱不符（可能被網路攔截）")
             }
 
-            // 構造並發送 RFC 7858 2-byte 長度前綴 DNS Query
             val txId = Random.nextInt(1, 0xFFFF)
             val dnsQuery = buildDnsAQuery(txId, PROBE_QNAME)
             val output = DataOutputStream(socket.outputStream)
@@ -65,11 +60,10 @@ object DotProber {
             output.write(dnsQuery)
             output.flush()
 
-            // 讀取 DNS 回應並校驗 Header (Transaction ID + QR=1 + RCODE=0)
             val input = DataInputStream(socket.inputStream)
             val respLen = input.readUnsignedShort()
             if (respLen < 12 || respLen > 4096) {
-                return ProbeResult(false, elapsedMs(startNs), "DoT 回應封包長度異常 ($respLen)")
+                return ProbeResult(false, elapsedMs(startNs), "DNS 回應封包長度異常 ($respLen)")
             }
             val resp = ByteArray(respLen)
             input.readFully(resp)
@@ -81,16 +75,16 @@ object DotProber {
             val latency = elapsedMs(startNs)
 
             if (respTxId == txId && isResponse && rcode == 0) {
-                ProbeResult(true, latency, "DoT 853 連線正常 (${latency}ms)")
+                ProbeResult(true, latency, "853 埠連線正常 (${latency}ms)")
             } else {
-                ProbeResult(false, latency, "DoT 伺服器回傳異常狀態 (RCODE=$rcode)")
+                ProbeResult(false, latency, "DNS 伺服器回傳錯誤 (RCODE=$rcode)")
             }
         } catch (_: SocketTimeoutException) {
-            ProbeResult(false, elapsedMs(startNs), "TCP 853 連線或查詢逾時（疑似遭防火牆封鎖）")
+            ProbeResult(false, elapsedMs(startNs), "853 埠連線逾時（可能被目前網路阻擋）")
         } catch (e: javax.net.ssl.SSLException) {
-            ProbeResult(false, elapsedMs(startNs), "TLS 握手失敗：${e.message ?: "憑證或連線遭阻斷"}")
+            ProbeResult(false, elapsedMs(startNs), "TLS 連線失敗：${e.message ?: "連線被阻斷"}")
         } catch (e: Exception) {
-            ProbeResult(false, elapsedMs(startNs), "探測失敗：${e.message ?: e.javaClass.simpleName}")
+            ProbeResult(false, elapsedMs(startNs), "連線測試失敗：${e.message ?: e.javaClass.simpleName}")
         } finally {
             try {
                 socket?.close()
@@ -100,13 +94,8 @@ object DotProber {
         }
     }
 
-    /**
-     * 建構最小標準 DNS A 記錄查詢封包 (RFC 1035)
-     * Builds a minimal standard DNS IN A query packet.
-     */
     internal fun buildDnsAQuery(txId: Int, domain: String): ByteArray {
         val out = ByteArrayOutputStream()
-        // Header: ID, Flags (RD=1 -> 0x0100), QDCOUNT=1, AN/NS/AR=0
         out.write((txId shr 8) and 0xFF)
         out.write(txId and 0xFF)
         out.write(0x01)
@@ -116,15 +105,13 @@ object DotProber {
         out.write(0x00); out.write(0x00)
         out.write(0x00); out.write(0x00)
 
-        // QNAME labels
         for (label in domain.split('.')) {
             val bytes = label.toByteArray(Charsets.US_ASCII)
             out.write(bytes.size)
             out.write(bytes)
         }
-        out.write(0x00) // root label terminator
+        out.write(0x00)
 
-        // QTYPE = A (1), QCLASS = IN (1)
         out.write(0x00); out.write(0x01)
         out.write(0x00); out.write(0x01)
         return out.toByteArray()

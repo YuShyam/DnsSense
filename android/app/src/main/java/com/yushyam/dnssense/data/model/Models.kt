@@ -20,27 +20,23 @@ enum class PrivateDnsMode(val settingValue: String, val labelZh: String) {
 }
 
 /**
- * 當前傳輸網路類型 (Active Network Transport)
+ * 傳輸網路類型 (Active Network Transport)
  */
 enum class NetworkTransport(val labelZh: String) {
     WIFI("Wi-Fi"),
-    CELLULAR("行動數據 (4G/5G)"),
+    CELLULAR("行動網路 (4G/5G)"),
     OTHER("其他網路"),
     NONE("無網路")
 }
 
 /**
- * 當前網路狀態快照 (Active Network Snapshot)
+ * 目前網路狀態快照 (Active Network Snapshot)
  */
 data class NetworkSnapshot(
     val transport: NetworkTransport,
     val ssid: String? = null,
     val isCaptivePortal: Boolean = false
 ) {
-    /**
-     * 產生用於單次覆寫與事件記錄之網路特徵鍵
-     * Generates a stable key representing the current network identity.
-     */
     val networkKey: String
         get() = when (transport) {
             NetworkTransport.WIFI -> "wifi:${normalizeSsid(ssid).ifEmpty { "<unknown>" }}"
@@ -68,7 +64,7 @@ data class NetworkSnapshot(
 }
 
 /**
- * DoT 853 主動探測結果 (Active DoT Probe Result)
+ * DoT 853 連線測試結果 (Active DoT Probe Result)
  */
 data class ProbeResult(
     val isHealthy: Boolean,
@@ -77,14 +73,38 @@ data class ProbeResult(
 )
 
 /**
- * 使用者配置與排除規則 (User Configuration & Bypass Rules)
+ * 外觀深淺色主題模式 (App Theme Mode)
+ */
+enum class ThemeMode(val settingValue: String, val labelZh: String) {
+    SYSTEM("system", "跟隨系統"),
+    LIGHT("light", "淺色"),
+    DARK("dark", "深色");
+
+    fun next(): ThemeMode = when (this) {
+        SYSTEM -> LIGHT
+        LIGHT -> DARK
+        DARK -> SYSTEM
+    }
+
+    companion object {
+        fun fromSetting(raw: String?): ThemeMode = when (raw?.lowercase()) {
+            "light" -> LIGHT
+            "dark" -> DARK
+            else -> SYSTEM
+        }
+    }
+}
+
+/**
+ * 使用者設定與排除規則 (User Configuration & Bypass Rules)
  */
 data class DnsSenseConfig(
     val enabled: Boolean = true,
     val hostname: String = DEFAULT_HOSTNAME,
     val autoProbeEnabled: Boolean = true,
     val bypassCellular: Boolean = false,
-    val bypassSsids: List<String> = emptyList()
+    val bypassSsids: List<String> = emptyList(),
+    val themeMode: String = ThemeMode.SYSTEM.settingValue
 ) {
     companion object {
         const val DEFAULT_HOSTNAME = "dns.adguard-dns.com"
@@ -95,16 +115,16 @@ data class DnsSenseConfig(
  * 決策依據原因 (Decision Reason)
  */
 enum class DecisionReason(val labelZh: String) {
-    GUARD_DISABLED("守護已暫停"),
+    GUARD_DISABLED("自動切換已暫停"),
     NO_NETWORK("目前無網路連線"),
-    INVALID_HOSTNAME("私人 DNS 主機格式無效"),
+    INVALID_HOSTNAME("伺服器位址格式無效"),
     TEMP_MANUAL_BYPASS("單次連線暫時切換為自動 DNS"),
-    BYPASS_CELLULAR("命中排除規則：行動數據 (4G/5G)"),
-    BYPASS_WIFI_SSID("命中排除網路清單"),
-    CAPTIVE_PORTAL_DETECTED("偵測到需網頁認證（Captive Portal）"),
-    DOT_PROBE_FAILED("DoT 853 探測失敗，自動降級"),
-    DOT_PROBE_HEALTHY("DoT 853 探測健康，啟用私人 DNS"),
-    DEFAULT_PRIVATE_DNS("非排除網路，啟用私人 DNS")
+    BYPASS_CELLULAR("排除規則：行動網路 (4G/5G)"),
+    BYPASS_WIFI_SSID("排除規則：位於排除 Wi-Fi 清單"),
+    CAPTIVE_PORTAL_DETECTED("網路需網頁登入認證"),
+    DOT_PROBE_FAILED("853 埠連線失敗，自動切回預設 DNS"),
+    DOT_PROBE_HEALTHY("853 埠連線正常，啟用私人 DNS"),
+    DEFAULT_PRIVATE_DNS("一般網路，啟用私人 DNS")
 }
 
 /**
@@ -128,8 +148,7 @@ data class EventLogItem(
 )
 
 /**
- * 私人 DNS 主機名稱格式校驗器 (Strict FQDN Validator)
- * 防止非法字串寫入系統設定或引發意外異常。
+ * 私人 DNS 伺服器位址格式校驗器 (Strict FQDN Validator)
  */
 object HostnameValidator {
     private val FQDN_REGEX = Regex(

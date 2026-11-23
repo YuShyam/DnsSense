@@ -32,11 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * DnsSense 背景守護前景服務 (Background Guard Foreground Service)
- *
- * 負責監聽網路變換、1500ms 防抖動、執行雙層決策與 DoT 853 探測：
- * - 模式 1：自動寫入 Settings.Global private_dns_mode
- * - 模式 3：未授權時發送建議通知，點擊直達系統網路設定頁
+ * DnsSense 背景網路監聽前景服務 (Background Foreground Service)
  */
 class DnsSenseService : Service() {
 
@@ -52,7 +48,7 @@ class DnsSenseService : Service() {
         prefs = DnsSensePrefs(this)
         observer = NetworkObserver(this)
         ensureChannels()
-        startForeground(NOTIF_GUARD_ID, buildGuardNotification("正在初始化網路感知..."))
+        startForeground(NOTIF_GUARD_ID, buildGuardNotification("正在檢查網路與 DNS 狀態..."))
         observer.start { snapshot ->
             scheduleEvaluation(snapshot, immediate = false)
         }
@@ -108,7 +104,6 @@ class DnsSenseService : Service() {
         val config = prefs.loadConfig()
         var tempBypassKey = prefs.getTempBypassNetworkKey()
 
-        // 一旦離開先前暫時覆寫的網路，立即自動清除單次覆寫
         if (!tempBypassKey.isNullOrBlank() &&
             snapshot.transport != NetworkTransport.NONE &&
             tempBypassKey != snapshot.networkKey
@@ -117,7 +112,6 @@ class DnsSenseService : Service() {
             tempBypassKey = null
         }
 
-        // 第二道省電防線：非強制重評且網路/設定指紋完全未變時，直接略過避免重複 DoT 853 探測
         val fingerprint = DecisionEngine.buildEvaluationFingerprint(config, snapshot, tempBypassKey)
         if (!force && fingerprint == lastEvaluatedFingerprint) {
             return
@@ -153,7 +147,6 @@ class DnsSenseService : Service() {
             (targetMode != PrivateDnsMode.HOSTNAME || currentHost.equals(config.hostname, ignoreCase = true))
 
         if (outcome.isAdvisoryOnly) {
-            // 提醒模式：未授權時發送建議通知，點擊直達系統網路設定頁
             val modeSummary = "${snapshot.displayLabel} · 建議：${targetMode.labelZh}（提醒模式）"
             updateGuardNotification(modeSummary)
             if (!alreadyMatches) {
@@ -168,7 +161,6 @@ class DnsSenseService : Service() {
                 )
             }
         } else {
-            // 自動模式：原生全自動切換
             if (!alreadyMatches) {
                 val (ok, msg) = PrivateDnsController.applyMode(this, targetMode, config.hostname)
                 prefs.appendLog(
@@ -201,18 +193,18 @@ class DnsSenseService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             val guardChannel = NotificationChannel(
                 CHANNEL_GUARD,
-                "DnsSense 背景守護",
+                "DnsSense 常駐狀態",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "顯示目前網路與私人 DNS 守護狀態"
+                description = "顯示目前網路與私人 DNS 狀態"
                 setShowBadge(false)
             }
             val alertChannel = NotificationChannel(
                 CHANNEL_ALERT,
-                "DNS 切換提醒與降級通知",
+                "DNS 切換通知",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "提醒模式建議通知與自動降級提示"
+                description = "提醒模式建議通知與自動切換提示"
             }
             nm.createNotificationChannel(guardChannel)
             nm.createNotificationChannel(alertChannel)
@@ -228,7 +220,7 @@ class DnsSenseService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_GUARD)
             .setSmallIcon(R.drawable.ic_dnssense_status)
-            .setContentTitle("DnsSense 守護運作中")
+            .setContentTitle("DnsSense 運作中")
             .setContentText(statusText)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -251,9 +243,9 @@ class DnsSenseService : Service() {
         val targetLabel = outcome.targetMode?.labelZh ?: "自動 DNS"
         val builder = NotificationCompat.Builder(this, CHANNEL_ALERT)
             .setSmallIcon(R.drawable.ic_dnssense_status)
-            .setContentTitle("建議將私人 DNS 切換為：$targetLabel")
+            .setContentTitle("建議切換為：$targetLabel")
             .setContentText("${snapshot.displayLabel} — ${outcome.detailZh}")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("${snapshot.displayLabel}\n${outcome.detailZh}\n點擊立即開啟系統設定頁手動切換。"))
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${snapshot.displayLabel}\n${outcome.detailZh}\n點擊開啟系統設定手動切換。"))
             .setAutoCancel(true)
             .setContentIntent(settingsPending)
             .addAction(0, "開啟系統設定", settingsPending)
@@ -271,7 +263,7 @@ class DnsSenseService : Service() {
         )
         val builder = NotificationCompat.Builder(this, CHANNEL_ALERT)
             .setSmallIcon(R.drawable.ic_dnssense_status)
-            .setContentTitle("已自動降級為系統自動 DNS")
+            .setContentTitle("已自動切回系統預設 DNS")
             .setContentText("${snapshot.displayLabel} — ${outcome.detailZh}")
             .setAutoCancel(true)
             .setContentIntent(openAppPending)

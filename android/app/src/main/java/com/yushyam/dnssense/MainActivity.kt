@@ -1,6 +1,7 @@
 package com.yushyam.dnssense
 
 import android.Manifest
+import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -18,6 +19,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,13 +35,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.yushyam.dnssense.data.model.DnsSenseConfig
 import com.yushyam.dnssense.data.model.EventLogItem
 import com.yushyam.dnssense.data.model.HostnameValidator
@@ -47,6 +55,7 @@ import com.yushyam.dnssense.data.model.NetworkSnapshot
 import com.yushyam.dnssense.data.model.NetworkTransport
 import com.yushyam.dnssense.data.model.PrivateDnsMode
 import com.yushyam.dnssense.data.model.ProbeResult
+import com.yushyam.dnssense.data.model.ThemeMode
 import com.yushyam.dnssense.data.repo.DnsSensePrefs
 import com.yushyam.dnssense.engine.DotProber
 import com.yushyam.dnssense.engine.NetworkObserver
@@ -59,27 +68,31 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// Shadcn / Zinc 中性極簡色票定義 (Minimalist Neutral Palette)
+// Shadcn / Zinc 動態深淺色票定義 (Dynamic Light & Dark Zinc Palette)
 private object DnsPalette {
-    val Bg = Color(0xFFFAFAFA)           // zinc-50
-    val Surface = Color(0xFFFFFFFF)      // pure white
-    val Subtle = Color(0xFFF4F4F5)       // zinc-100
-    val Border = Color(0xFFE4E4E7)       // zinc-200
-    val Ink = Color(0xFF09090B)          // zinc-950
-    val InkPrimary = Color(0xFF18181B)   // zinc-900
-    val InkMuted = Color(0xFF71717A)     // zinc-500
-    val InkFaint = Color(0xFFA1A1AA)     // zinc-400
+    var isDark by mutableStateOf(false)
 
-    val GreenBg = Color(0xFFECFDF5)
-    val GreenBorder = Color(0xFFA7F3D0)
-    val GreenFg = Color(0xFF047857)
+    val Bg: Color get() = if (isDark) Color(0xFF09090B) else Color(0xFFFAFAFA)
+    val Surface: Color get() = if (isDark) Color(0xFF18181B) else Color(0xFFFFFFFF)
+    val Subtle: Color get() = if (isDark) Color(0xFF27272A) else Color(0xFFF4F4F5)
+    val Border: Color get() = if (isDark) Color(0xFF27272A) else Color(0xFFE4E4E7)
+    val Ink: Color get() = if (isDark) Color(0xFFFAFAFA) else Color(0xFF09090B)
+    val InkPrimary: Color get() = if (isDark) Color(0xFFFAFAFA) else Color(0xFF18181B)
+    val OnPrimary: Color get() = if (isDark) Color(0xFF18181B) else Color(0xFFFFFFFF)
+    val InkMuted: Color get() = if (isDark) Color(0xFFA1A1AA) else Color(0xFF71717A)
+    val InkFaint: Color get() = if (isDark) Color(0xFF71717A) else Color(0xFFA1A1AA)
 
-    val AmberBg = Color(0xFFFFFBEB)
-    val AmberBorder = Color(0xFFFDE68A)
-    val AmberFg = Color(0xFFB45309)
+    val GreenBg: Color get() = if (isDark) Color(0xFF052E16) else Color(0xFFECFDF5)
+    val GreenBorder: Color get() = if (isDark) Color(0xFF14532D) else Color(0xFFA7F3D0)
+    val GreenFg: Color get() = if (isDark) Color(0xFF34D399) else Color(0xFF047857)
 
-    val RedBg = Color(0xFFFEF2F2)
-    val RedFg = Color(0xFFBE123C)
+    val AmberBg: Color get() = if (isDark) Color(0xFF271705) else Color(0xFFFFFBEB)
+    val AmberBorder: Color get() = if (isDark) Color(0xFF78350F) else Color(0xFFFDE68A)
+    val AmberFg: Color get() = if (isDark) Color(0xFFFBBF24) else Color(0xFFB45309)
+    val AmberSubText: Color get() = if (isDark) Color(0xFFFDE68A) else Color(0xFF92400E)
+
+    val RedBg: Color get() = if (isDark) Color(0xFF2A0A12) else Color(0xFFFEF2F2)
+    val RedFg: Color get() = if (isDark) Color(0xFFFB7185) else Color(0xFFBE123C)
 }
 
 private enum class MainTab(val title: String, val icon: ImageVector) {
@@ -95,14 +108,13 @@ private data class DnsPreset(
     val hostname: String
 )
 
-// 依「零干擾純加密 ⮕ 資安防護 ⮕ 進階擋廣告」由淺入深排列，避免一般使用者誤選強過濾導致功能異常
 private val DNS_PRESETS = listOf(
     DnsPreset("Google", "8.8.8.8 · 純加密", "dns.google"),
-    DnsPreset("Cloudflare", "1.1.1.1 · 極速加密", "1dot1dot1dot1.cloudflare-dns.com"),
-    DnsPreset("Quad9", "資安 · 擋惡意", "dns.quad9.net"),
-    DnsPreset("AdGuard", "進階 · 擋廣告", DnsSenseConfig.DEFAULT_HOSTNAME),
-    DnsPreset("Mullvad", "進階 · 擋廣告+隱私", "base.dns.mullvad.net"),
-    DnsPreset("Control D", "進階 · 擋廣告+惡意", "p2.freedns.controld.com")
+    DnsPreset("Cloudflare", "1.1.1.1 · 純加密", "1dot1dot1dot1.cloudflare-dns.com"),
+    DnsPreset("Quad9", "阻擋惡意網站", "dns.quad9.net"),
+    DnsPreset("AdGuard", "阻擋廣告與追蹤", DnsSenseConfig.DEFAULT_HOSTNAME),
+    DnsPreset("Mullvad", "阻擋廣告與隱私保護", "base.dns.mullvad.net"),
+    DnsPreset("Control D", "阻擋廣告與惡意網站", "p2.freedns.controld.com")
 )
 
 class MainActivity : ComponentActivity() {
@@ -111,6 +123,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         DnsSenseService.startOrReevaluate(this)
+        sendBroadcast(Intent(DnsSenseService.ACTION_STATE_UPDATED).setPackage(packageName))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -122,31 +135,19 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme(
-                colorScheme = lightColorScheme(
-                    primary = DnsPalette.InkPrimary,
-                    onPrimary = Color.White,
-                    secondary = Color(0xFF3F3F46),
-                    background = DnsPalette.Bg,
-                    surface = DnsPalette.Surface,
-                    surfaceVariant = DnsPalette.Subtle,
-                    outline = DnsPalette.Border
-                )
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = DnsPalette.Bg
-                ) {
-                    DnsSenseApp(
-                        context = this,
-                        onRequestRuntimePermissions = { requestNeededRuntimePermissions() },
-                        onShowToast = { msg ->
-                            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                        }
-                    )
+            DnsSenseApp(
+                context = this,
+                onRequestRuntimePermissions = { requestNeededRuntimePermissions() },
+                onShowToast = { msg ->
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 }
-            }
+            )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        sendBroadcast(Intent(DnsSenseService.ACTION_STATE_UPDATED).setPackage(packageName))
     }
 
     private fun requestNeededRuntimePermissions() {
@@ -161,6 +162,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private fun checkLocationPermission(context: Context): Boolean {
+    val fine = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+    val coarse = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+    return fine || coarse
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DnsSenseApp(
@@ -171,11 +184,13 @@ fun DnsSenseApp(
     val scope = rememberCoroutineScope()
     val prefs = remember { DnsSensePrefs(context) }
     val observer = remember { NetworkObserver(context) }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var selectedTab by remember { mutableStateOf(MainTab.OVERVIEW) }
     var config by remember { mutableStateOf(prefs.loadConfig()) }
     var hostnameInput by remember { mutableStateOf(config.hostname) }
     var hasSecurePermission by remember { mutableStateOf(PrivateDnsController.hasWriteSecureSettings(context)) }
+    var hasLocationPermission by remember { mutableStateOf(checkLocationPermission(context)) }
     var currentMode by remember { mutableStateOf(PrivateDnsController.readCurrentMode(context)) }
     var currentSpecifier by remember { mutableStateOf(PrivateDnsController.readCurrentSpecifier(context)) }
     var snapshot by remember { mutableStateOf(observer.currentSnapshot()) }
@@ -184,13 +199,81 @@ fun DnsSenseApp(
     var isProbing by remember { mutableStateOf(false) }
     var showAddSsidDialog by remember { mutableStateOf(false) }
 
+    val systemDark = isSystemInDarkTheme()
+    val currentThemeMode = ThemeMode.fromSetting(config.themeMode)
+    val useDark = when (currentThemeMode) {
+        ThemeMode.SYSTEM -> systemDark
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+    DnsPalette.isDark = useDark
+
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (context as? Activity)?.window ?: return@SideEffect
+            @Suppress("DEPRECATION")
+            window.statusBarColor = DnsPalette.Surface.toArgb()
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = DnsPalette.Surface.toArgb()
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = !useDark
+            controller.isAppearanceLightNavigationBars = !useDark
+        }
+    }
+
+    val colorScheme = if (useDark) {
+        darkColorScheme(
+            primary = DnsPalette.InkPrimary,
+            onPrimary = DnsPalette.OnPrimary,
+            secondary = Color(0xFFD4D4D8),
+            background = DnsPalette.Bg,
+            surface = DnsPalette.Surface,
+            onSurface = DnsPalette.Ink,
+            surfaceVariant = DnsPalette.Subtle,
+            onSurfaceVariant = DnsPalette.InkMuted,
+            outline = DnsPalette.Border
+        )
+    } else {
+        lightColorScheme(
+            primary = DnsPalette.InkPrimary,
+            onPrimary = DnsPalette.OnPrimary,
+            secondary = Color(0xFF3F3F46),
+            background = DnsPalette.Bg,
+            surface = DnsPalette.Surface,
+            onSurface = DnsPalette.Ink,
+            surfaceVariant = DnsPalette.Subtle,
+            onSurfaceVariant = DnsPalette.InkMuted,
+            outline = DnsPalette.Border
+        )
+    }
+
     fun refreshState() {
         config = prefs.loadConfig()
         hasSecurePermission = PrivateDnsController.hasWriteSecureSettings(context)
+        hasLocationPermission = checkLocationPermission(context)
         currentMode = PrivateDnsController.readCurrentMode(context)
         currentSpecifier = PrivateDnsController.readCurrentSpecifier(context)
         snapshot = observer.currentSnapshot()
         logs = prefs.loadLogs()
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        val next = config.copy(themeMode = mode.settingValue)
+        prefs.saveConfig(next)
+        config = next
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val lifecycleObserver = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshState()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
+        }
     }
 
     DisposableEffect(Unit) {
@@ -211,267 +294,290 @@ fun DnsSenseApp(
         }
     }
 
-    val hasLocationPermission = ContextCompat.checkSelfPermission(
-        context,
-        Manifest.permission.ACCESS_FINE_LOCATION
-    ) == PackageManager.PERMISSION_GRANTED
-
-    Scaffold(
-        containerColor = DnsPalette.Bg,
-        topBar = {
-            Column {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DnsPalette.Surface),
-                    title = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Text(
-                                "DnsSense",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 19.sp,
-                                color = DnsPalette.Ink
-                            )
-                            StatusPill(
-                                label = if (hasSecurePermission) "自動模式" else "提醒模式",
-                                bg = if (hasSecurePermission) DnsPalette.GreenBg else DnsPalette.AmberBg,
-                                border = if (hasSecurePermission) DnsPalette.GreenBorder else DnsPalette.AmberBorder,
-                                fg = if (hasSecurePermission) DnsPalette.GreenFg else DnsPalette.AmberFg
-                            )
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = {
-                            refreshState()
-                            DnsSenseService.startOrReevaluate(context)
-                            onShowToast("已重新評估網路與 DNS 狀態")
-                        }) {
-                            Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = "重新整理",
-                                tint = DnsPalette.InkPrimary
-                            )
-                        }
-                    }
-                )
-                HorizontalDivider(color = DnsPalette.Border, thickness = 1.dp)
-            }
-        },
-        bottomBar = {
-            Column {
-                HorizontalDivider(color = DnsPalette.Border, thickness = 1.dp)
-                NavigationBar(
-                    containerColor = DnsPalette.Surface,
-                    tonalElevation = 0.dp
-                ) {
-                    MainTab.entries.forEach { tab ->
-                        val selected = selectedTab == tab
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = {
-                                selectedTab = tab
-                                refreshState()
-                            },
-                            icon = {
-                                Icon(
-                                    tab.icon,
-                                    contentDescription = tab.title,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            },
-                            label = {
-                                Text(
-                                    tab.title,
-                                    fontSize = 12.sp,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = DnsPalette.Ink,
-                                selectedTextColor = DnsPalette.Ink,
-                                unselectedIconColor = DnsPalette.InkMuted,
-                                unselectedTextColor = DnsPalette.InkMuted,
-                                indicatorColor = DnsPalette.Subtle
-                            )
-                        )
-                    }
-                }
-            }
-        }
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+    MaterialTheme(colorScheme = colorScheme) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = DnsPalette.Bg
         ) {
-            when (selectedTab) {
-                MainTab.OVERVIEW -> OverviewTab(
-                    config = config,
-                    snapshot = snapshot,
-                    currentMode = currentMode,
-                    currentSpecifier = currentSpecifier,
-                    hasSecurePermission = hasSecurePermission,
-                    probeResult = probeResult,
-                    isProbing = isProbing,
-                    onToggleGuard = { checked ->
-                        val next = config.copy(enabled = checked)
-                        prefs.saveConfig(next)
-                        config = next
-                        if (checked) DnsSenseService.startOrReevaluate(context)
-                        else DnsSenseService.stop(context)
-                    },
-                    onRunProbe = {
-                        isProbing = true
-                        scope.launch(Dispatchers.IO) {
-                            val res = DotProber.probe(config.hostname)
-                            withContext(Dispatchers.Main) {
-                                probeResult = res
-                                isProbing = false
-                            }
-                        }
-                    },
-                    onOpenSystemSettings = {
-                        context.startActivity(PrivateDnsController.buildNetworkSettingsIntent())
-                    },
-                    onGoToAuthSettings = { selectedTab = MainTab.SETTINGS },
-                    onQuickBypassCurrentWifi = { ssid ->
-                        config = prefs.addBypassSsid(ssid)
-                        onShowToast("已將「$ssid」加入排除清單")
-                        DnsSenseService.startOrReevaluate(context)
-                    }
-                )
-
-                MainTab.RULES -> RulesTab(
-                    config = config,
-                    snapshot = snapshot,
-                    hasLocationPermission = hasLocationPermission,
-                    onToggleBypassCellular = { checked ->
-                        val next = config.copy(bypassCellular = checked)
-                        prefs.saveConfig(next)
-                        config = next
-                        DnsSenseService.startOrReevaluate(context)
-                    },
-                    onAddCurrentWifi = { ssid ->
-                        config = prefs.addBypassSsid(ssid)
-                        onShowToast("已將「$ssid」加入排除清單")
-                        DnsSenseService.startOrReevaluate(context)
-                    },
-                    onOpenAddDialog = { showAddSsidDialog = true },
-                    onRemoveSsid = { ssid ->
-                        config = prefs.removeBypassSsid(ssid)
-                        onShowToast("已移除排除規則：$ssid")
-                        DnsSenseService.startOrReevaluate(context)
-                    },
-                    onRequestLocation = onRequestRuntimePermissions
-                )
-
-                MainTab.SETTINGS -> SettingsTab(
-                    context = context,
-                    config = config,
-                    hostnameInput = hostnameInput,
-                    hasSecurePermission = hasSecurePermission,
-                    hasLocationPermission = hasLocationPermission,
-                    onHostnameChange = { hostnameInput = it },
-                    onSaveHostname = {
-                        val trimmed = hostnameInput.trim()
-                        if (!HostnameValidator.isValid(trimmed)) {
-                            onShowToast("主機名稱格式無效，請輸入如 dns.adguard-dns.com")
-                        } else {
-                            val next = config.copy(hostname = trimmed)
-                            prefs.saveConfig(next)
-                            config = next
-                            onShowToast("已儲存私人 DNS：$trimmed")
-                            DnsSenseService.startOrReevaluate(context)
-                        }
-                    },
-                    onToggleAutoProbe = { checked ->
-                        val next = config.copy(autoProbeEnabled = checked)
-                        prefs.saveConfig(next)
-                        config = next
-                        DnsSenseService.startOrReevaluate(context)
-                    },
-                    onGrantShizuku = {
-                        scope.launch(Dispatchers.IO) {
-                            val (_, msg) = PrivateDnsController.grantViaShizuku(context)
-                            withContext(Dispatchers.Main) {
-                                refreshState()
-                                onShowToast(msg)
-                                if (PrivateDnsController.hasWriteSecureSettings(context)) {
+            Scaffold(
+                containerColor = DnsPalette.Bg,
+                topBar = {
+                    Column {
+                        TopAppBar(
+                            colors = TopAppBarDefaults.topAppBarColors(containerColor = DnsPalette.Surface),
+                            title = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        "DnsSense",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 19.sp,
+                                        color = DnsPalette.Ink
+                                    )
+                                    StatusPill(
+                                        label = if (hasSecurePermission) "自動模式" else "提醒模式",
+                                        bg = if (hasSecurePermission) DnsPalette.GreenBg else DnsPalette.AmberBg,
+                                        border = if (hasSecurePermission) DnsPalette.GreenBorder else DnsPalette.AmberBorder,
+                                        fg = if (hasSecurePermission) DnsPalette.GreenFg else DnsPalette.AmberFg
+                                    )
+                                }
+                            },
+                            actions = {
+                                IconButton(onClick = {
+                                    val nextMode = currentThemeMode.next()
+                                    setThemeMode(nextMode)
+                                    onShowToast("外觀：${nextMode.labelZh}")
+                                }) {
+                                    Icon(
+                                        when (currentThemeMode) {
+                                            ThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
+                                            ThemeMode.LIGHT -> Icons.Default.LightMode
+                                            ThemeMode.DARK -> Icons.Default.DarkMode
+                                        },
+                                        contentDescription = "切換深淺色",
+                                        tint = DnsPalette.InkPrimary
+                                    )
+                                }
+                                IconButton(onClick = {
+                                    refreshState()
                                     DnsSenseService.startOrReevaluate(context)
+                                    onShowToast("狀態已更新")
+                                }) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "重新整理",
+                                        tint = DnsPalette.InkPrimary
+                                    )
                                 }
                             }
+                        )
+                        HorizontalDivider(color = DnsPalette.Border, thickness = 1.dp)
+                    }
+                },
+                bottomBar = {
+                    Column {
+                        HorizontalDivider(color = DnsPalette.Border, thickness = 1.dp)
+                        NavigationBar(
+                            containerColor = DnsPalette.Surface,
+                            tonalElevation = 0.dp
+                        ) {
+                            MainTab.entries.forEach { tab ->
+                                val selected = selectedTab == tab
+                                NavigationBarItem(
+                                    selected = selected,
+                                    onClick = {
+                                        selectedTab = tab
+                                        refreshState()
+                                    },
+                                    icon = {
+                                        Icon(
+                                            tab.icon,
+                                            contentDescription = tab.title,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            tab.title,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                        )
+                                    },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = DnsPalette.Ink,
+                                        selectedTextColor = DnsPalette.Ink,
+                                        unselectedIconColor = DnsPalette.InkMuted,
+                                        unselectedTextColor = DnsPalette.InkMuted,
+                                        indicatorColor = DnsPalette.Subtle
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            ) { padding ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                ) {
+                    when (selectedTab) {
+                        MainTab.OVERVIEW -> OverviewTab(
+                            config = config,
+                            snapshot = snapshot,
+                            currentMode = currentMode,
+                            currentSpecifier = currentSpecifier,
+                            hasSecurePermission = hasSecurePermission,
+                            probeResult = probeResult,
+                            isProbing = isProbing,
+                            onToggleGuard = { checked ->
+                                val next = config.copy(enabled = checked)
+                                prefs.saveConfig(next)
+                                config = next
+                                if (checked) DnsSenseService.startOrReevaluate(context)
+                                else DnsSenseService.stop(context)
+                            },
+                            onRunProbe = {
+                                isProbing = true
+                                scope.launch(Dispatchers.IO) {
+                                    val res = DotProber.probe(config.hostname)
+                                    withContext(Dispatchers.Main) {
+                                        probeResult = res
+                                        isProbing = false
+                                    }
+                                }
+                            },
+                            onOpenSystemSettings = {
+                                context.startActivity(PrivateDnsController.buildNetworkSettingsIntent())
+                            },
+                            onGoToAuthSettings = { selectedTab = MainTab.SETTINGS },
+                            onQuickBypassCurrentWifi = { ssid ->
+                                config = prefs.addBypassSsid(ssid)
+                                onShowToast("已將「$ssid」加入排除清單")
+                                DnsSenseService.startOrReevaluate(context)
+                            }
+                        )
+
+                        MainTab.RULES -> RulesTab(
+                            config = config,
+                            snapshot = snapshot,
+                            hasLocationPermission = hasLocationPermission,
+                            onToggleBypassCellular = { checked ->
+                                val next = config.copy(bypassCellular = checked)
+                                prefs.saveConfig(next)
+                                config = next
+                                DnsSenseService.startOrReevaluate(context)
+                            },
+                            onAddCurrentWifi = { ssid ->
+                                config = prefs.addBypassSsid(ssid)
+                                onShowToast("已將「$ssid」加入排除清單")
+                                DnsSenseService.startOrReevaluate(context)
+                            },
+                            onOpenAddDialog = { showAddSsidDialog = true },
+                            onRemoveSsid = { ssid ->
+                                config = prefs.removeBypassSsid(ssid)
+                                onShowToast("已移除：$ssid")
+                                DnsSenseService.startOrReevaluate(context)
+                            },
+                            onRequestLocation = onRequestRuntimePermissions
+                        )
+
+                        MainTab.SETTINGS -> SettingsTab(
+                            context = context,
+                            config = config,
+                            currentThemeMode = currentThemeMode,
+                            hostnameInput = hostnameInput,
+                            hasSecurePermission = hasSecurePermission,
+                            hasLocationPermission = hasLocationPermission,
+                            onSelectThemeMode = { mode -> setThemeMode(mode) },
+                            onHostnameChange = { hostnameInput = it },
+                            onSaveHostname = {
+                                val trimmed = hostnameInput.trim()
+                                if (!HostnameValidator.isValid(trimmed)) {
+                                    onShowToast("位址格式不正確，請輸入如 dns.adguard-dns.com")
+                                } else {
+                                    val next = config.copy(hostname = trimmed)
+                                    prefs.saveConfig(next)
+                                    config = next
+                                    onShowToast("已儲存：$trimmed")
+                                    DnsSenseService.startOrReevaluate(context)
+                                }
+                            },
+                            onToggleAutoProbe = { checked ->
+                                val next = config.copy(autoProbeEnabled = checked)
+                                prefs.saveConfig(next)
+                                config = next
+                                DnsSenseService.startOrReevaluate(context)
+                            },
+                            onGrantShizuku = {
+                                scope.launch(Dispatchers.IO) {
+                                    val (_, msg) = PrivateDnsController.grantViaShizuku(context)
+                                    withContext(Dispatchers.Main) {
+                                        refreshState()
+                                        onShowToast(msg)
+                                        if (PrivateDnsController.hasWriteSecureSettings(context)) {
+                                            DnsSenseService.startOrReevaluate(context)
+                                        }
+                                    }
+                                }
+                            },
+                            onCopyAdb = {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(
+                                    ClipData.newPlainText("adb_grant", PrivateDnsController.adbGrantCommand(context))
+                                )
+                                onShowToast("已複製 ADB 指令")
+                            },
+                            onRequestLocation = onRequestRuntimePermissions
+                        )
+
+                        MainTab.LOGS -> LogsTab(
+                            logs = logs,
+                            onClearLogs = {
+                                prefs.clearLogs()
+                                logs = emptyList()
+                                onShowToast("已清除紀錄")
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (showAddSsidDialog) {
+                var newSsid by remember { mutableStateOf("") }
+                AlertDialog(
+                    containerColor = DnsPalette.Surface,
+                    onDismissRequest = { showAddSsidDialog = false },
+                    title = { Text("新增排除 Wi-Fi", fontWeight = FontWeight.SemiBold, color = DnsPalette.Ink) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "連上此 Wi-Fi 時，將自動切回系統預設 DNS。",
+                                fontSize = 13.sp,
+                                color = DnsPalette.InkMuted
+                            )
+                            OutlinedTextField(
+                                value = newSsid,
+                                onValueChange = { newSsid = it },
+                                label = { Text("Wi-Fi 名稱 (SSID)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     },
-                    onCopyAdb = {
-                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(
-                            ClipData.newPlainText("adb_grant", PrivateDnsController.adbGrantCommand(context))
-                        )
-                        onShowToast("已複製一次性 ADB 授權指令")
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                if (newSsid.isNotBlank()) {
+                                    config = prefs.addBypassSsid(newSsid)
+                                    DnsSenseService.startOrReevaluate(context)
+                                }
+                                showAddSsidDialog = false
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DnsPalette.InkPrimary,
+                                contentColor = DnsPalette.OnPrimary
+                            )
+                        ) {
+                            Text("加入")
+                        }
                     },
-                    onRequestLocation = onRequestRuntimePermissions
-                )
-
-                MainTab.LOGS -> LogsTab(
-                    logs = logs,
-                    onClearLogs = {
-                        prefs.clearLogs()
-                        logs = emptyList()
-                        onShowToast("已清除守護日誌")
+                    dismissButton = {
+                        TextButton(onClick = { showAddSsidDialog = false }) {
+                            Text("取消", color = DnsPalette.InkMuted)
+                        }
                     }
                 )
             }
         }
-    }
-
-    if (showAddSsidDialog) {
-        var newSsid by remember { mutableStateOf("") }
-        AlertDialog(
-            containerColor = DnsPalette.Surface,
-            onDismissRequest = { showAddSsidDialog = false },
-            title = { Text("新增排除 Wi-Fi", fontWeight = FontWeight.SemiBold, color = DnsPalette.Ink) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "連線到此 Wi-Fi 時，DnsSense 將優先切換為系統自動 DNS。",
-                        fontSize = 13.sp,
-                        color = DnsPalette.InkMuted
-                    )
-                    OutlinedTextField(
-                        value = newSsid,
-                        onValueChange = { newSsid = it },
-                        label = { Text("Wi-Fi 名稱 (SSID)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newSsid.isNotBlank()) {
-                            config = prefs.addBypassSsid(newSsid)
-                            DnsSenseService.startOrReevaluate(context)
-                        }
-                        showAddSsidDialog = false
-                    },
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("加入")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddSsidDialog = false }) {
-                    Text("取消", color = DnsPalette.InkMuted)
-                }
-            }
-        )
     }
 }
 
 // =====================================================================
-// Tab 1: 總覽 (Hero 狀態焦點 + Bento 雙欄摘要 + 一鍵動作)
+// Tab 1: 總覽
 // =====================================================================
 @Composable
 private fun OverviewTab(
@@ -492,6 +598,28 @@ private fun OverviewTab(
     val alreadyBypassed = currentSsid.isNotEmpty() &&
         config.bypassSsids.any { it.equals(currentSsid, ignoreCase = true) }
 
+    val networkHeader = when (snapshot.transport) {
+        NetworkTransport.WIFI -> "目前網路 · Wi-Fi"
+        NetworkTransport.CELLULAR -> "目前網路 · 行動網路"
+        NetworkTransport.OTHER -> "目前網路 · 其他"
+        NetworkTransport.NONE -> "目前網路"
+    }
+
+    val networkPrimaryTitle = when (snapshot.transport) {
+        NetworkTransport.WIFI -> currentSsid.ifEmpty { "已連線 Wi-Fi" }
+        NetworkTransport.CELLULAR -> "4G / 5G 網路"
+        NetworkTransport.OTHER -> "外部網路"
+        NetworkTransport.NONE -> "未連線"
+    }
+
+    val networkSubtitle = when {
+        snapshot.transport == NetworkTransport.NONE -> "無可用網路連線"
+        snapshot.isCaptivePortal -> "需網頁登入認證"
+        alreadyBypassed -> "已列入排除清單"
+        snapshot.transport == NetworkTransport.CELLULAR && config.bypassCellular -> "行動網路已排除"
+        else -> "使用私人 DNS"
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -499,7 +627,6 @@ private fun OverviewTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(vertical = 14.dp)
     ) {
-        // Hero 狀態主卡（3 秒視覺焦點）
         item {
             CraftCard {
                 Row(
@@ -509,7 +636,7 @@ private fun OverviewTab(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "系統目前 DNS 狀態",
+                            if (config.enabled) "目前 DNS 狀態 · 自動監控中" else "目前 DNS 狀態 · 已暫停",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
                             color = DnsPalette.InkMuted
@@ -517,15 +644,16 @@ private fun OverviewTab(
                         Spacer(Modifier.height(4.dp))
                         Text(
                             currentMode.labelZh,
-                            fontSize = 28.sp,
+                            fontSize = 26.sp,
                             fontWeight = FontWeight.Bold,
                             color = DnsPalette.Ink
                         )
                         val hostSubtitle = when {
                             currentMode == PrivateDnsMode.HOSTNAME && currentSpecifier.isNotBlank() -> currentSpecifier
-                            currentMode == PrivateDnsMode.OPPORTUNISTIC -> "由系統依網路自動協調"
-                            else -> "目標主機：${config.hostname}"
+                            currentMode == PrivateDnsMode.OPPORTUNISTIC -> "系統預設自動切換"
+                            else -> "設定位址：${config.hostname}"
                         }
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             hostSubtitle,
                             fontSize = 13.sp,
@@ -534,146 +662,186 @@ private fun OverviewTab(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Switch(
-                            checked = config.enabled,
-                            onCheckedChange = onToggleGuard
-                        )
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = config.enabled,
+                        onCheckedChange = onToggleGuard
+                    )
+                }
+            }
+        }
+
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Max),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    color = DnsPalette.Surface,
+                    border = BorderStroke(1.dp, DnsPalette.Border),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (snapshot.transport == NetworkTransport.WIFI) Icons.Default.Wifi
+                                else Icons.Default.SignalCellularAlt,
+                                contentDescription = null,
+                                tint = DnsPalette.InkMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                networkHeader,
+                                fontSize = 12.sp,
+                                color = DnsPalette.InkMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+
                         Text(
-                            if (config.enabled) "守護中" else "已暫停",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (config.enabled) DnsPalette.GreenFg else DnsPalette.InkMuted
+                            networkPrimaryTitle,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = DnsPalette.Ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
+
+                        Spacer(Modifier.height(6.dp))
+
+                        Text(
+                            networkSubtitle,
+                            fontSize = 12.sp,
+                            color = if (snapshot.isCaptivePortal) DnsPalette.AmberFg else DnsPalette.InkMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(enabled = !isProbing) { onRunProbe() },
+                    color = DnsPalette.Surface,
+                    border = BorderStroke(1.dp, DnsPalette.Border),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Sensors,
+                                contentDescription = null,
+                                tint = DnsPalette.InkMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "DoT 853 連線",
+                                fontSize = 12.sp,
+                                color = DnsPalette.InkMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+
+                        when {
+                            isProbing -> {
+                                Text(
+                                    "測試中...",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = DnsPalette.Ink,
+                                    maxLines = 1
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "正在連線 853 埠",
+                                    fontSize = 12.sp,
+                                    color = DnsPalette.InkMuted,
+                                    maxLines = 1
+                                )
+                            }
+                            probeResult != null -> {
+                                Text(
+                                    if (probeResult.isHealthy) "${probeResult.latencyMs} ms" else "連線失敗",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (probeResult.isHealthy) DnsPalette.GreenFg else DnsPalette.RedFg,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    if (probeResult.isHealthy) "853 埠連線正常" else probeResult.reason,
+                                    fontSize = 12.sp,
+                                    color = DnsPalette.InkMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            else -> {
+                                Text(
+                                    "未測試",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = DnsPalette.Ink,
+                                    maxLines = 1
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "點擊測試連線",
+                                    fontSize = 12.sp,
+                                    color = DnsPalette.InkMuted,
+                                    maxLines = 1
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // 雙欄 Bento 數據卡（當前網路 + DoT 853 健康狀態）
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                CraftCard(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            if (snapshot.transport == NetworkTransport.WIFI) Icons.Default.Wifi
-                            else Icons.Default.SignalCellularAlt,
-                            contentDescription = null,
-                            tint = DnsPalette.InkMuted,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("當前網路", fontSize = 12.sp, color = DnsPalette.InkMuted)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        snapshot.displayLabel,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = DnsPalette.Ink,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        when {
-                            snapshot.isCaptivePortal -> "需網頁認證"
-                            alreadyBypassed -> "位於排除清單"
-                            snapshot.transport == NetworkTransport.CELLULAR && config.bypassCellular -> "行動數據已排除"
-                            else -> "標準守護範圍"
-                        },
-                        fontSize = 12.sp,
-                        color = if (snapshot.isCaptivePortal) DnsPalette.AmberFg else DnsPalette.InkMuted
-                    )
-                }
-
-                CraftCard(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Sensors,
-                            contentDescription = null,
-                            tint = DnsPalette.InkMuted,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("DoT 853 探測", fontSize = 12.sp, color = DnsPalette.InkMuted)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    when {
-                        isProbing -> {
-                            LinearProgressIndicator(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(4.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
-                                color = DnsPalette.InkPrimary,
-                                trackColor = DnsPalette.Subtle
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text("正在測試 TLS 853...", fontSize = 12.sp, color = DnsPalette.InkMuted)
-                        }
-                        probeResult != null -> {
-                            Text(
-                                if (probeResult.isHealthy) "${probeResult.latencyMs} ms" else "連線受阻",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = if (probeResult.isHealthy) DnsPalette.GreenFg else DnsPalette.RedFg
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                if (probeResult.isHealthy) "853 查詢正常" else probeResult.reason,
-                                fontSize = 12.sp,
-                                color = DnsPalette.InkMuted,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        else -> {
-                            Text(
-                                "待探測",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = DnsPalette.Ink
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text("點下方按鈕即時實測", fontSize = 12.sp, color = DnsPalette.InkMuted)
-                        }
-                    }
-                }
-            }
-        }
-
-        // 一鍵核心操作列（高標靶高度 46dp，符合菲茨定律）
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = onRunProbe,
-                    enabled = !isProbing,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(46.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = DnsPalette.InkPrimary)
-                ) {
-                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (isProbing) "探測中..." else "探測 DoT 853", fontWeight = FontWeight.Medium)
-                }
-
                 OutlinedButton(
                     onClick = onOpenSystemSettings,
                     modifier = Modifier
                         .weight(1f)
                         .height(46.dp),
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, DnsPalette.Border)
+                    border = BorderStroke(1.dp, DnsPalette.Border),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = DnsPalette.Surface,
+                        contentColor = DnsPalette.InkPrimary
+                    )
                 ) {
                     Icon(
                         Icons.Default.SettingsEthernet,
@@ -682,30 +850,64 @@ private fun OverviewTab(
                         tint = DnsPalette.InkPrimary
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("系統 DNS 設定", color = DnsPalette.InkPrimary, fontWeight = FontWeight.Medium)
+                    Text(
+                        "系統 DNS 設定",
+                        color = DnsPalette.InkPrimary,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+
+                Button(
+                    onClick = onRunProbe,
+                    enabled = !isProbing,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DnsPalette.InkPrimary,
+                        contentColor = DnsPalette.OnPrimary
+                    )
+                ) {
+                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (isProbing) "測試中..." else "測試 DNS 連線",
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
                 }
             }
         }
 
-        // 若連線至未排除 Wi-Fi，提供 1-Click 快捷收編
         if (snapshot.transport == NetworkTransport.WIFI && currentSsid.isNotEmpty() && !alreadyBypassed) {
             item {
                 OutlinedButton(
                     onClick = { onQuickBypassCurrentWifi(currentSsid) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp),
+                        .height(46.dp),
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, DnsPalette.Border)
+                    border = BorderStroke(1.dp, DnsPalette.Border),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = DnsPalette.Surface,
+                        contentColor = DnsPalette.InkPrimary
+                    )
                 ) {
                     Icon(Icons.Default.AddCircleOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("將目前 Wi-Fi「$currentSsid」加入排除清單", color = DnsPalette.InkPrimary)
+                    Text(
+                        "將「$currentSsid」加入排除清單",
+                        color = DnsPalette.InkPrimary,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
 
-        // 漸進式揭露：未授權時顯示精簡引導條（點一下跳轉「設定」頁籤解鎖）
         if (!hasSecurePermission) {
             item {
                 Surface(
@@ -724,16 +926,16 @@ private fun OverviewTab(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "目前以「提醒模式」運作",
+                                "目前為「提醒模式」",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp,
                                 color = DnsPalette.AmberFg
                             )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                "前往「設定」完成一次性授權，即可升級為全自動切換。",
+                                "點擊前往「設定」開啟自動切換權限。",
                                 fontSize = 12.sp,
-                                color = Color(0xFF92400E)
+                                color = DnsPalette.AmberSubText
                             )
                         }
                         Icon(
@@ -749,7 +951,7 @@ private fun OverviewTab(
 }
 
 // =====================================================================
-// Tab 2: 排除規則 (行動數據 + Wi-Fi 排除清單 + 完整空白態)
+// Tab 2: 排除規則
 // =====================================================================
 @Composable
 private fun RulesTab(
@@ -771,7 +973,6 @@ private fun RulesTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(vertical = 14.dp)
     ) {
-        // 說明與行動數據開關
         item {
             CraftCard {
                 Row(
@@ -780,10 +981,10 @@ private fun RulesTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("排除行動數據 (4G / 5G)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = DnsPalette.Ink)
+                        Text("排除行動網路 (4G / 5G)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = DnsPalette.Ink)
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "切換到行動網路時改用系統自動 DNS",
+                            "使用行動網路時自動切回系統預設 DNS",
                             fontSize = 12.sp,
                             color = DnsPalette.InkMuted
                         )
@@ -796,7 +997,6 @@ private fun RulesTab(
             }
         }
 
-        // 未授予定位權限時提醒（否則背景讀不到 Wi-Fi SSID）
         if (!hasLocationPermission) {
             item {
                 Surface(
@@ -811,36 +1011,29 @@ private fun RulesTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("尚未授予精確定位權限", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = DnsPalette.AmberFg)
-                            Text("Android 規定需定位權限才能讀取 Wi-Fi 名稱。", fontSize = 12.sp, color = Color(0xFF92400E))
+                            Text("需開啟位置權限以讀取 Wi-Fi 名稱", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = DnsPalette.AmberFg)
+                            Text("Android 系統規定讀取 Wi-Fi 名稱需具備位置權限。", fontSize = 12.sp, color = DnsPalette.AmberSubText)
                         }
                         Spacer(Modifier.width(8.dp))
                         TextButton(onClick = onRequestLocation) {
-                            Text("立即授予", color = DnsPalette.AmberFg, fontWeight = FontWeight.SemiBold)
+                            Text("開啟權限", color = DnsPalette.AmberFg, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
             }
         }
 
-        // Wi-Fi 排除清單標題與新增動作
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text("排除 Wi-Fi 清單", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
-                    Text("命中清單一律切為自動 DNS（優先於 853 探測）", fontSize = 12.sp, color = DnsPalette.InkMuted)
-                }
+            Column {
+                Text("排除 Wi-Fi 清單", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
+                Text("連上清單內的 Wi-Fi 時，自動切回系統預設 DNS", fontSize = 12.sp, color = DnsPalette.InkMuted)
             }
         }
 
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
                     onClick = { onAddCurrentWifi(currentSsid) },
@@ -849,7 +1042,10 @@ private fun RulesTab(
                         .weight(1f)
                         .height(44.dp),
                     shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = DnsPalette.InkPrimary)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DnsPalette.InkPrimary,
+                        contentColor = DnsPalette.OnPrimary
+                    )
                 ) {
                     Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
@@ -861,16 +1057,19 @@ private fun RulesTab(
                         .weight(1f)
                         .height(44.dp),
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, DnsPalette.Border)
+                    border = BorderStroke(1.dp, DnsPalette.Border),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = DnsPalette.Surface,
+                        contentColor = DnsPalette.InkPrimary
+                    )
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp), tint = DnsPalette.InkPrimary)
                     Spacer(Modifier.width(4.dp))
-                    Text("手動輸入 SSID", color = DnsPalette.InkPrimary)
+                    Text("手動輸入名稱", color = DnsPalette.InkPrimary, maxLines = 1)
                 }
             }
         }
 
-        // 完整空白態 (Empty State) 或清單項目
         if (config.bypassSsids.isEmpty()) {
             item {
                 CraftCard {
@@ -888,13 +1087,13 @@ private fun RulesTab(
                             modifier = Modifier.size(36.dp)
                         )
                         Text(
-                            "尚未新增任何排除 Wi-Fi",
+                            "尚未加入任何 Wi-Fi",
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 15.sp,
                             color = DnsPalette.Ink
                         )
                         Text(
-                            "將公司內網、飯店或偶發功能異常的 Wi-Fi 加入此處，連上時會自動退回系統 DNS。",
+                            "若特定 Wi-Fi（如公司內網或公用網路）開啟私人 DNS 後無法連線，可加入此處自動切回預設 DNS。",
                             fontSize = 12.sp,
                             color = DnsPalette.InkMuted
                         )
@@ -939,15 +1138,17 @@ private fun RulesTab(
 }
 
 // =====================================================================
-// Tab 3: 設定 (私人 DNS 主機、主動探測開關、一次性授權中心)
+// Tab 3: 設定
 // =====================================================================
 @Composable
 private fun SettingsTab(
     context: Context,
     config: DnsSenseConfig,
+    currentThemeMode: ThemeMode,
     hostnameInput: String,
     hasSecurePermission: Boolean,
     hasLocationPermission: Boolean,
+    onSelectThemeMode: (ThemeMode) -> Unit,
     onHostnameChange: (String) -> Unit,
     onSaveHostname: () -> Unit,
     onToggleAutoProbe: (Boolean) -> Unit,
@@ -962,21 +1163,67 @@ private fun SettingsTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(vertical = 14.dp)
     ) {
-        // 私人 DNS 主機設定
+        // 外觀深淺色主題切換卡 (跟隨系統 / 淺色 / 深色)
         item {
             CraftCard {
-                Text("私人 DNS 主機 (DoT)", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("外觀主題", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
+                    Text("支援自動跟隨系統或手動切換", fontSize = 12.sp, color = DnsPalette.InkMuted)
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(DnsPalette.Subtle, RoundedCornerShape(10.dp))
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    ThemeMode.entries.forEach { mode ->
+                        val selected = currentThemeMode == mode
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(7.dp))
+                                .clickable { onSelectThemeMode(mode) },
+                            color = if (selected) DnsPalette.Surface else Color.Transparent,
+                            border = if (selected) BorderStroke(1.dp, DnsPalette.Border) else null,
+                            shape = RoundedCornerShape(7.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    mode.labelZh,
+                                    fontSize = 13.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                    color = if (selected) DnsPalette.Ink else DnsPalette.InkMuted
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            CraftCard {
+                Text("私人 DNS 伺服器", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = hostnameInput,
                     onValueChange = onHostnameChange,
-                    label = { Text("主機名稱（FQDN）") },
+                    label = { Text("伺服器位址（例如 dns.adguard-dns.com）") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "快速套用（由純加密至進階過濾排序）",
+                    "常用伺服器",
                     fontSize = 12.sp,
                     color = DnsPalette.InkMuted
                 )
@@ -984,7 +1231,9 @@ private fun SettingsTab(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     DNS_PRESETS.chunked(2).forEach { rowPresets ->
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Max),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             rowPresets.forEach { preset ->
@@ -993,7 +1242,9 @@ private fun SettingsTab(
                                     name = preset.name,
                                     badge = preset.badge,
                                     selected = isSelected,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight(),
                                     onClick = { onHostnameChange(preset.hostname) }
                                 )
                             }
@@ -1007,14 +1258,16 @@ private fun SettingsTab(
                         .fillMaxWidth()
                         .height(44.dp),
                     shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = DnsPalette.InkPrimary)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DnsPalette.InkPrimary,
+                        contentColor = DnsPalette.OnPrimary
+                    )
                 ) {
-                    Text("儲存主機名稱並立即生效")
+                    Text("儲存設定", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
 
-        // 主動探測設定
         item {
             CraftCard {
                 Row(
@@ -1023,10 +1276,10 @@ private fun SettingsTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("DoT 853 主動探測降級", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = DnsPalette.Ink)
+                        Text("自動測試連線", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = DnsPalette.Ink)
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "連上未知網路時自動測試 853 存活，被封鎖即退回系統自動 DNS",
+                            "連上新網路時自動測試 853 埠，若被阻擋則暫時切回自動 DNS",
                             fontSize = 12.sp,
                             color = DnsPalette.InkMuted
                         )
@@ -1039,13 +1292,11 @@ private fun SettingsTab(
             }
         }
 
-        // 權限與運作模式中心
         item {
             CraftCard {
-                Text("運作模式與權限狀態", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
+                Text("權限與運作模式", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
                 Spacer(Modifier.height(10.dp))
 
-                // 權限 1: WRITE_SECURE_SETTINGS
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1054,14 +1305,14 @@ private fun SettingsTab(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("自動切換權限", fontWeight = FontWeight.Medium, fontSize = 14.sp, color = DnsPalette.Ink)
                         Text(
-                            if (hasSecurePermission) "已啟用「自動模式」，免 Shizuku 常駐、重開機有效"
-                            else "目前為「提醒模式」，授權一次即可永久升級自動模式",
+                            if (hasSecurePermission) "已啟用自動切換，重開機仍有效"
+                            else "授權一次即可依網路自動切換 DNS",
                             fontSize = 12.sp,
                             color = DnsPalette.InkMuted
                         )
                     }
                     StatusPill(
-                        label = if (hasSecurePermission) "已授權" else "未授權",
+                        label = if (hasSecurePermission) "已開啟" else "未開啟",
                         bg = if (hasSecurePermission) DnsPalette.GreenBg else DnsPalette.AmberBg,
                         border = if (hasSecurePermission) DnsPalette.GreenBorder else DnsPalette.AmberBorder,
                         fg = if (hasSecurePermission) DnsPalette.GreenFg else DnsPalette.AmberFg
@@ -1073,12 +1324,13 @@ private fun SettingsTab(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(DnsPalette.InkPrimary, RoundedCornerShape(8.dp))
+                            .background(DnsPalette.Subtle, RoundedCornerShape(8.dp))
+                            .border(1.dp, DnsPalette.Border, RoundedCornerShape(8.dp))
                             .padding(10.dp)
                     ) {
                         Text(
                             PrivateDnsController.adbGrantCommand(context),
-                            color = Color(0xFFE4E4E7),
+                            color = DnsPalette.Ink,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp
                         )
@@ -1094,9 +1346,12 @@ private fun SettingsTab(
                                 .weight(1f)
                                 .height(42.dp),
                             shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = DnsPalette.InkPrimary)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DnsPalette.InkPrimary,
+                                contentColor = DnsPalette.OnPrimary
+                            )
                         ) {
-                            Text("Shizuku 一鍵授權", fontSize = 13.sp)
+                            Text("Shizuku 授權", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         OutlinedButton(
                             onClick = onCopyAdb,
@@ -1106,7 +1361,7 @@ private fun SettingsTab(
                             shape = RoundedCornerShape(10.dp),
                             border = BorderStroke(1.dp, DnsPalette.Border)
                         ) {
-                            Text("複製 ADB 指令", fontSize = 13.sp, color = DnsPalette.InkPrimary)
+                            Text("複製 ADB 指令", fontSize = 13.sp, color = DnsPalette.InkPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -1116,25 +1371,24 @@ private fun SettingsTab(
                     color = DnsPalette.Border
                 )
 
-                // 權限 2: 定位權限
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("精確定位權限（讀取 Wi-Fi 名稱）", fontWeight = FontWeight.Medium, fontSize = 14.sp, color = DnsPalette.Ink)
+                        Text("位置權限（讀取 Wi-Fi 名稱）", fontWeight = FontWeight.Medium, fontSize = 14.sp, color = DnsPalette.Ink)
                         Text(
-                            "100% 本地比對 SSID，絕不外傳任何位置資訊",
+                            "僅用於本機判斷目前連線的 Wi-Fi 名稱",
                             fontSize = 12.sp,
                             color = DnsPalette.InkMuted
                         )
                     }
                     if (hasLocationPermission) {
-                        StatusPill("已授權", DnsPalette.GreenBg, DnsPalette.GreenBorder, DnsPalette.GreenFg)
+                        StatusPill("已開啟", DnsPalette.GreenBg, DnsPalette.GreenBorder, DnsPalette.GreenFg)
                     } else {
                         TextButton(onClick = onRequestLocation) {
-                            Text("授予", fontWeight = FontWeight.SemiBold)
+                            Text("開啟權限", fontWeight = FontWeight.SemiBold, color = DnsPalette.InkPrimary)
                         }
                     }
                 }
@@ -1144,7 +1398,7 @@ private fun SettingsTab(
 }
 
 // =====================================================================
-// Tab 4: 日誌 (時間軸記錄 + 空白態)
+// Tab 4: 日誌
 // =====================================================================
 @Composable
 private fun LogsTab(
@@ -1167,14 +1421,14 @@ private fun LogsTab(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "近期守護紀錄（${logs.size} 筆）",
+                    "近期切換紀錄（${logs.size} 筆）",
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp,
                     color = DnsPalette.Ink
                 )
                 if (logs.isNotEmpty()) {
                     TextButton(onClick = onClearLogs) {
-                        Text("清除全部", color = DnsPalette.RedFg, fontSize = 13.sp)
+                        Text("清除", color = DnsPalette.RedFg, fontSize = 13.sp)
                     }
                 }
             }
@@ -1196,9 +1450,9 @@ private fun LogsTab(
                             tint = DnsPalette.InkFaint,
                             modifier = Modifier.size(36.dp)
                         )
-                        Text("尚無切換或探測紀錄", fontWeight = FontWeight.SemiBold, color = DnsPalette.Ink)
+                        Text("尚無切換紀錄", fontWeight = FontWeight.SemiBold, color = DnsPalette.Ink)
                         Text(
-                            "當網路切換或觸發自動降級時，完整決策原因會記錄於此。",
+                            "網路切換與自動調整 DNS 的紀錄會顯示於此。",
                             fontSize = 12.sp,
                             color = DnsPalette.InkMuted
                         )
@@ -1232,7 +1486,7 @@ private fun LogsTab(
 }
 
 // =====================================================================
-// 共用極簡元件 (Shadcn Restrained Surface / Pill / Chip)
+// 共用元件
 // =====================================================================
 @Composable
 private fun CraftCard(
@@ -1298,20 +1552,22 @@ private fun PresetChip(
         border = BorderStroke(1.dp, if (selected) DnsPalette.InkPrimary else DnsPalette.Border),
         shape = RoundedCornerShape(10.dp)
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
             Text(
                 name,
-                fontSize = 13.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = if (selected) Color.White else DnsPalette.Ink,
+                color = if (selected) DnsPalette.OnPrimary else DnsPalette.Ink,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(Modifier.height(2.dp))
             Text(
                 badge,
                 fontSize = 11.sp,
-                color = if (selected) Color(0xFFD4D4D8) else DnsPalette.InkMuted,
+                color = if (selected) DnsPalette.OnPrimary.copy(alpha = 0.75f) else DnsPalette.InkMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
