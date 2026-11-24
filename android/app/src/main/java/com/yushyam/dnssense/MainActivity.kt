@@ -57,13 +57,16 @@ import com.yushyam.dnssense.data.model.PrivateDnsMode
 import com.yushyam.dnssense.data.model.ProbeResult
 import com.yushyam.dnssense.data.model.ThemeMode
 import com.yushyam.dnssense.data.repo.DnsSensePrefs
+import com.yushyam.dnssense.engine.AppUpdater
 import com.yushyam.dnssense.engine.DotProber
 import com.yushyam.dnssense.engine.NetworkObserver
 import com.yushyam.dnssense.engine.PrivateDnsController
+import com.yushyam.dnssense.engine.ReleaseUpdateInfo
 import com.yushyam.dnssense.service.DnsSenseService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -199,6 +202,47 @@ fun DnsSenseApp(
     var isProbing by remember { mutableStateOf(false) }
     var showAddSsidDialog by remember { mutableStateOf(false) }
 
+    val currentVersionName = remember { AppUpdater.currentVersionName(context) }
+    var isCheckingUpdate by remember { mutableStateOf(false) }
+    var updateInfo by remember { mutableStateOf<ReleaseUpdateInfo?>(null) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var isDownloadingUpdate by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0) }
+    var downloadedApkFile by remember { mutableStateOf<File?>(null) }
+    var waitingForInstallPerm by remember { mutableStateOf(false) }
+
+    fun checkForUpdate(manual: Boolean) {
+        if (isCheckingUpdate) return
+        isCheckingUpdate = true
+        scope.launch(Dispatchers.IO) {
+            val res = AppUpdater.checkLatestRelease(context)
+            withContext(Dispatchers.Main) {
+                isCheckingUpdate = false
+                res.onSuccess { info ->
+                    updateInfo = info
+                    if (info.isUpdateAvailable) {
+                        downloadedApkFile = null
+                        downloadProgress = 0
+                        showUpdateDialog = true
+                    } else if (manual) {
+                        onShowToast("目前已是最新版本 (v${info.currentVersion})")
+                    }
+                }.onFailure { err ->
+                    if (manual) {
+                        onShowToast("檢查更新失敗：${err.message ?: "網路異常"}")
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            AppUpdater.cleanCachedApks(context)
+        }
+        checkForUpdate(manual = false)
+    }
+
     val systemDark = isSystemInDarkTheme()
     val currentThemeMode = ThemeMode.fromSetting(config.themeMode)
     val useDark = when (currentThemeMode) {
@@ -268,6 +312,11 @@ fun DnsSenseApp(
         val lifecycleObserver = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 refreshState()
+                val pendingApk = downloadedApkFile
+                if (waitingForInstallPerm && pendingApk != null && AppUpdater.canInstallPackages(context)) {
+                    waitingForInstallPerm = false
+                    AppUpdater.installApk(context, pendingApk)
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
@@ -468,10 +517,13 @@ fun DnsSenseApp(
                             context = context,
                             config = config,
                             currentThemeMode = currentThemeMode,
+                            currentVersionName = currentVersionName,
+                            isCheckingUpdate = isCheckingUpdate,
                             hostnameInput = hostnameInput,
                             hasSecurePermission = hasSecurePermission,
                             hasLocationPermission = hasLocationPermission,
                             onSelectThemeMode = { mode -> setThemeMode(mode) },
+                            onCheckUpdate = { checkForUpdate(manual = true) },
                             onHostnameChange = { hostnameInput = it },
                             onSaveHostname = {
                                 val trimmed = hostnameInput.trim()
@@ -568,6 +620,133 @@ fun DnsSenseApp(
                     dismissButton = {
                         TextButton(onClick = { showAddSsidDialog = false }) {
                             Text("取消", color = DnsPalette.InkMuted)
+                        }
+                    }
+                )
+            }
+
+            if (showUpdateDialog && updateInfo != null) {
+                val info = updateInfo!!
+                AlertDialog(
+                    containerColor = DnsPalette.Surface,
+                    onDismissRequest = {
+                        if (!isDownloadingUpdate) showUpdateDialog = false
+                    },
+                    title = {
+                        Text(
+                            "發現新版本 ${info.tagName}",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp,
+                            color = DnsPalette.Ink
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "目前版本：v${info.currentVersion} ➔ 最新版本：v${info.latestVersion}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = DnsPalette.GreenFg
+                            )
+                            Surface(
+                                color = DnsPalette.Subtle,
+                                border = BorderStroke(1.dp, DnsPalette.Border),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    info.releaseNotes,
+                                    fontSize = 12.sp,
+                                    color = DnsPalette.Ink,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                            if (isDownloadingUpdate) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    LinearProgressIndicator(
+                                        progress = { (downloadProgress / 100f).coerceIn(0f, 1f) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(6.dp)
+                                            .clip(RoundedCornerShape(999.dp)),
+                                        color = DnsPalette.InkPrimary,
+                                        trackColor = DnsPalette.Subtle
+                                    )
+                                    Text(
+                                        "下載中... $downloadProgress%",
+                                        fontSize = 12.sp,
+                                        color = DnsPalette.InkMuted
+                                    )
+                                }
+                            } else if (downloadedApkFile != null) {
+                                Text(
+                                    "下載完成！點擊「安裝更新」即可覆蓋升級（保留所有設定）。",
+                                    fontSize = 12.sp,
+                                    color = DnsPalette.GreenFg,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            enabled = !isDownloadingUpdate,
+                            onClick = {
+                                val readyFile = downloadedApkFile
+                                if (readyFile != null && readyFile.exists()) {
+                                    if (!AppUpdater.canInstallPackages(context)) {
+                                        waitingForInstallPerm = true
+                                        onShowToast("請先開啟「允許安裝未知應用程式」，返回後將自動啟動安裝")
+                                    }
+                                    AppUpdater.installApk(context, readyFile)
+                                } else {
+                                    isDownloadingUpdate = true
+                                    downloadProgress = 0
+                                    scope.launch(Dispatchers.IO) {
+                                        val dl = AppUpdater.downloadApk(
+                                            context = context,
+                                            downloadUrl = info.downloadUrl,
+                                            assetName = info.assetName,
+                                            onProgress = { pct ->
+                                                downloadProgress = pct
+                                            }
+                                        )
+                                        withContext(Dispatchers.Main) {
+                                            isDownloadingUpdate = false
+                                            dl.onSuccess { file ->
+                                                downloadedApkFile = file
+                                                if (!AppUpdater.canInstallPackages(context)) {
+                                                    waitingForInstallPerm = true
+                                                    onShowToast("請先開啟「允許安裝未知應用程式」，返回後將自動啟動安裝")
+                                                }
+                                                AppUpdater.installApk(context, file)
+                                            }.onFailure { err ->
+                                                onShowToast("下載失敗：${err.message ?: "網路錯誤"}")
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DnsPalette.InkPrimary,
+                                contentColor = DnsPalette.OnPrimary
+                            )
+                        ) {
+                            Text(
+                                when {
+                                    isDownloadingUpdate -> "下載中..."
+                                    downloadedApkFile != null -> "安裝更新"
+                                    else -> "立即下載更新"
+                                }
+                            )
+                        }
+                    },
+                    dismissButton = {
+                        if (!isDownloadingUpdate) {
+                            TextButton(onClick = { showUpdateDialog = false }) {
+                                Text("稍後", color = DnsPalette.InkMuted)
+                            }
                         }
                     }
                 )
@@ -1145,10 +1324,13 @@ private fun SettingsTab(
     context: Context,
     config: DnsSenseConfig,
     currentThemeMode: ThemeMode,
+    currentVersionName: String,
+    isCheckingUpdate: Boolean,
     hostnameInput: String,
     hasSecurePermission: Boolean,
     hasLocationPermission: Boolean,
     onSelectThemeMode: (ThemeMode) -> Unit,
+    onCheckUpdate: () -> Unit,
     onHostnameChange: (String) -> Unit,
     onSaveHostname: () -> Unit,
     onToggleAutoProbe: (Boolean) -> Unit,
@@ -1390,6 +1572,44 @@ private fun SettingsTab(
                         TextButton(onClick = onRequestLocation) {
                             Text("開啟權限", fontWeight = FontWeight.SemiBold, color = DnsPalette.InkPrimary)
                         }
+                    }
+                }
+            }
+        }
+
+        item {
+            CraftCard {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("版本與更新", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = DnsPalette.Ink)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "目前版本：v$currentVersionName（啟動時自動檢查 GitHub 更新）",
+                            fontSize = 12.sp,
+                            color = DnsPalette.InkMuted
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = onCheckUpdate,
+                        enabled = !isCheckingUpdate,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, DnsPalette.Border),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = DnsPalette.Surface,
+                            contentColor = DnsPalette.InkPrimary
+                        )
+                    ) {
+                        Text(
+                            if (isCheckingUpdate) "檢查中..." else "檢查更新",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = DnsPalette.InkPrimary
+                        )
                     }
                 }
             }

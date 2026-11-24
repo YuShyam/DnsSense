@@ -8,6 +8,7 @@ import com.yushyam.dnssense.data.model.NetworkTransport
 import com.yushyam.dnssense.data.model.PrivateDnsMode
 import com.yushyam.dnssense.data.model.ProbeResult
 import com.yushyam.dnssense.data.repo.DnsSensePrefs
+import com.yushyam.dnssense.engine.AppUpdater
 import com.yushyam.dnssense.engine.DecisionEngine
 import com.yushyam.dnssense.engine.DotProber
 import org.junit.Assert.assertEquals
@@ -188,5 +189,34 @@ class DecisionEngineTest {
         assertEquals(fp1, fp2)
         assertFalse(fp1 == fpCaptive)
         assertFalse(fp1 == fpOther)
+    }
+
+    @Test
+    fun appUpdaterComparesSemanticVersionsAndParsesGitHubReleaseJson() {
+        assertTrue(AppUpdater.isNewerVersion("0.2.0", "v0.2.1"))
+        assertTrue(AppUpdater.isNewerVersion("v0.2.1", "v0.3.0"))
+        assertTrue(AppUpdater.isNewerVersion("0.2.1", "v1.0.0"))
+        assertFalse(AppUpdater.isNewerVersion("0.2.1", "v0.2.1"))
+        assertFalse(AppUpdater.isNewerVersion("0.3.0", "v0.2.9"))
+
+        val sampleJson = """
+            {
+              "tag_name": "v0.2.1",
+              "body": "新增 GitHub 線上自動更新功能",
+              "assets": [
+                {
+                  "name": "DnsSense-v0.2.1.apk",
+                  "browser_download_url": "https://github.com/YuShyam/DnsSense/releases/download/v0.2.1/DnsSense-v0.2.1.apk"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = AppUpdater.parseReleaseJson("0.2.0", sampleJson).getOrThrow()
+        assertTrue(parsed.isUpdateAvailable)
+        assertEquals("0.2.0", parsed.currentVersion)
+        assertEquals("0.2.1", parsed.latestVersion)
+        assertEquals("DnsSense-v0.2.1.apk", parsed.assetName)
+        assertTrue(parsed.downloadUrl.endsWith("DnsSense-v0.2.1.apk"))
     }
 }
